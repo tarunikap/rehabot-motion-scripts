@@ -1,0 +1,45 @@
+import numpy as np
+
+progress = 0.0
+stroke_speed = 0.15  
+fixed_leg_pose = None
+
+def reset():
+    global progress, fixed_leg_pose
+    progress = 0.0
+    fixed_leg_pose = None
+    leg.jointPositions = [0.707, -1.5]
+    return [0.0] * 17
+
+def control(x, dt):
+    global progress, fixed_leg_pose
+
+    leg.jointPositions = [0.707, -1.5]
+
+    if fixed_leg_pose is None:
+        fixed_leg_pose = getTransforms('foot_bottom')
+
+    J = Jkin(x)
+    f = fkin(x)
+
+    top = np.array(getTransforms('thigh_top'))
+    bottom = np.array(getTransforms('thigh_bottom'))
+
+    alpha = min(progress, 1.0)
+    pos = (1 - alpha) * top[:3] + alpha * bottom[:3]
+    ori = top[3:]  
+
+    target_right = np.concatenate([pos, ori])
+    target_left = fixed_leg_pose  # Keep left hand fixed
+
+    mu = np.ndarray((14,))
+    mu[:7] = target_right
+    mu[7:] = target_left
+
+    diff = np.ndarray(12)
+    diff[:6] = logmap(mu[:7], f[:7])
+    diff[6:] = logmap(mu[7:], f[7:])
+
+    u = np.linalg.pinv(J) @ diff
+    progress += stroke_speed * dt
+    return u / dt

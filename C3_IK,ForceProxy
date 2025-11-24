@@ -1,0 +1,83 @@
+# RCFS Challenge 03- IK control with fixed mannequin
+# Plots: (1) Normal pressing proxy |e·n| and (2) Cartesian hand speed ||J qdot||
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+force_log = []
+speed_log = []
+time_log = []
+
+def reset():
+    global force_log, speed_log, time_log
+    # Fix mannequin initial joint configuration
+    leg.jointPositions = [0.707, -1.5]
+    force_log, speed_log, time_log = [], [], []
+    plt.ion()
+    plt.figure(figsize=(6,5))
+    return [0.] * 17
+
+
+def control(x, dt):
+    global force_log, speed_log, time_log
+
+    leg.jointPositions = [0.707, -1.5]
+
+    J = Jkin(x)
+    f = fkin(x)
+
+    mu = np.ndarray((14,))
+    mu[:7] = getTransforms('thigh_top')  # Right-hand target
+    mu[7:] = getTransforms('calf_top')   # Left-hand target
+
+    diff = np.ndarray(12)
+    diff[:6] = logmap(mu[:7], f[:7])     # Right-hand correction
+    diff[6:] = logmap(mu[7:], f[7:])     # Left-hand correction
+
+    u = np.linalg.pinv(J) @ diff
+    qdot = u / dt
+
+
+
+    eR = diff[:6]
+    e_pos = eR[:3]  # translational part (m)
+
+    # Extract target normal (z axis from quaternion)
+    qx, qy, qz, qw = mu[3:7]
+    n = np.array([
+        2*(qx*qz + qw*qy),
+        2*(qy*qz - qw*qx),
+        1 - 2*(qx*qx + qy*qy)
+    ])
+    n = n / np.linalg.norm(n)
+    F_norm = abs(np.dot(e_pos, n))  # proxy in meters
+
+    # 2️⃣ Cartesian hand speed (||J qdot||)
+    v_cart = J[:6,:] @ qdot
+    speed = np.linalg.norm(v_cart[:3])  # translational (m/s)
+
+    # Log data
+    force_log.append(F_norm)
+    speed_log.append(speed)
+    time_log.append(len(force_log) * dt)
+
+    if len(force_log) % 150 == 0:
+        plt.clf()
+
+        plt.subplot(2,1,1)
+        plt.plot(time_log, force_log, label='|e·n|  (Press Proxy)')
+        plt.ylabel('Press Error [m]')
+        plt.legend()
+        plt.grid(True)
+
+        plt.subplot(2,1,2)
+        plt.plot(time_log, speed_log, color='orange', label='Hand Speed [m/s]')
+        plt.ylabel('Speed [m/s]')
+        plt.xlabel('Time [s]')
+        plt.legend()
+        plt.grid(True)
+
+        plt.suptitle('IK Controller – Fixed Mannequin')
+        plt.pause(0.001)
+
+    return qdot

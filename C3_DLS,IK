@@ -1,0 +1,83 @@
+# RCFS Challenge 03 — DLS + IK control (Right arm only)
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+force_log = []
+speed_log = []
+time_log = []
+
+def reset():
+    global force_log, speed_log, time_log
+    leg.jointPositions = [0.707, -1.5]
+    force_log, speed_log, time_log = [], [], []
+    plt.ion()
+    plt.figure(figsize=(6,5))
+    return [0.] * 17
+
+
+def control(x, dt):
+    global force_log, speed_log, time_log
+
+    leg.jointPositions = [0.707, -1.5]
+
+    J = Jkin(x)
+    f = fkin(x)
+
+    mu = np.ndarray((14,))
+    mu[:7] = getTransforms('thigh_top')  # right-hand target
+    mu[7:] = f[7:]                       # left hand = frozen
+
+    eR = logmap(mu[:7], f[:7])
+
+    JR = J[:6, :]
+
+    lam = 0.1
+    JJt = JR @ JR.T
+    J_dls = JR.T @ np.linalg.inv(JJt + lam**2 * np.eye(6))
+
+    dq = J_dls @ eR
+    alpha = 0.8
+    qdot = alpha * (dq / max(dt, 1e-6))
+    qdot = np.clip(qdot, -2.0, 2.0)
+
+
+
+    e_pos = eR[:3]
+    qx, qy, qz, qw = mu[3:7]
+    n = np.array([
+        2*(qx*qz + qw*qy),
+        2*(qy*qz - qw*qx),
+        1 - 2*(qx*qx + qy*qy)
+    ])
+    n = n / np.linalg.norm(n)
+    F_norm = abs(np.dot(e_pos, n))
+
+    v_cart = JR @ qdot
+    speed = np.linalg.norm(v_cart[:3])
+
+    force_log.append(F_norm)
+    speed_log.append(speed)
+    time_log.append(len(force_log) * dt)
+
+    if len(force_log) % 150 == 0:
+        plt.clf()
+
+        plt.subplot(2,1,1)
+        plt.plot(time_log, force_log, label='|e·n|  (Press Proxy)')
+        plt.ylabel('Press Error [m]')
+        plt.legend()
+        plt.grid(True)
+
+        plt.subplot(2,1,2)
+        plt.plot(time_log, speed_log, color='orange', label='Hand Speed [m/s]')
+        plt.ylabel('Speed [m/s]')
+        plt.xlabel('Time [s]')
+        plt.legend()
+        plt.grid(True)
+
+        plt.suptitle('DLS + IK Controller – Fixed Mannequin')
+        plt.pause(0.001)
+
+    return qdot

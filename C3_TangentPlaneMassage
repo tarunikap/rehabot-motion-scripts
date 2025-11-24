@@ -1,0 +1,75 @@
+#  Tangent-plane massage around thigh_top (on-surface, constant press depth)
+
+
+import numpy as np
+
+theta = 0.0  # phase of the circular motion
+
+def reset():
+    global theta
+    leg.jointPositions = [0.707, -1.5] 
+    theta = 0.0
+    return [0.] * 17
+
+
+def quat_to_R(qx, qy, qz, qw):
+    """Quaternion -> rotation matrix (row-major 3x3)."""
+    xx, yy, zz = qx*qx, qy*qy, qz*qz
+    xy, xz, yz = qx*qy, qx*qz, qy*qz
+    wx, wy, wz = qw*qx, qw*qy, qw*qz
+    R = np.array([
+        [1-2*(yy+zz),   2*(xy-wz),     2*(xz+wy)],
+        [  2*(xy+wz), 1-2*(xx+zz),     2*(yz-wx)],
+        [  2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)]
+    ])
+    return R
+
+
+def control(x, dt):
+    global theta
+
+    leg.jointPositions = [0.707, -1.5]
+
+    J = Jkin(x)     # 12x17 (first 6 rows = right hand)
+    f = fkin(x)    
+
+    thigh_top = getTransforms('thigh_top')
+    p0 = np.array(thigh_top[:3])
+    qx, qy, qz, qw = thigh_top[3:]
+    R = quat_to_R(qx, qy, qz, qw)
+
+    n = R[:, 2]           
+    n = n / np.linalg.norm(n)
+    # Build tangent basis (u, v) spanning plane orthogonal to n
+    world_up = np.array([0., 0., 1.])
+
+    helper = world_up if abs(np.dot(n, world_up)) < 0.9 else np.array([1., 0., 0.])
+    u = np.cross(n, helper);  u = u / (np.linalg.norm(u) + 1e-9)
+    v = np.cross(n, u);       v = v / (np.linalg.norm(v) + 1e-9)
+
+    radius = 0.02    # 2 cm circle in tangent plane
+    omega  = 0.6     # rad/s
+    depth  = 0.005   # 5 mm constant press depth along normal (into surface)
+
+    theta += omega * dt
+    p_traj = p0 + radius * (np.cos(theta)*u + np.sin(theta)*v) - depth * n
+    q_traj = thigh_top[3:]  
+
+    mu = np.ndarray((14,))
+    mu[:7] = np.hstack([p_traj, q_traj])  # right desired
+    mu[7:] = f[7:]                        # left holds its current pose
+
+    eR = logmap(mu[:7], f[:7])
+
+    JR = J[:6, :]
+
+    lam = 0.1
+    JJt = JR @ JR.T
+    J_dls = JR.T @ np.linalg.inv(JJt + lam**2 * np.eye(6))
+    dq = J_dls @ eR
+
+    alpha = 0.8
+    qdot = alpha * (dq / max(dt, 1e-6))
+    qdot = np.clip(qdot, -2.0, 2.0)
+
+    return qdot

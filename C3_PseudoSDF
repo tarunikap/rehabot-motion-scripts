@@ -1,0 +1,66 @@
+# Pseudo-SDF surface tracking between thigh_top to calf_top
+
+
+import numpy as np
+
+phase = 0.0
+reached = False
+
+def reset():
+    global phase, reached
+    leg.jointPositions = [0.707, -1.5]   
+    phase, reached = 0.0, False
+    return [0.] * 17
+
+
+def pseudo_sdf(p, p1, p2, r):
+    """Compute signed distance to capsule segment."""
+    v = p2 - p1
+    t = np.clip(np.dot(p - p1, v) / (np.dot(v, v) + 1e-9), 0, 1)
+    proj = p1 + t * v
+    return np.linalg.norm(p - proj) - r, proj
+
+
+def control(x, dt):
+    global phase, reached
+
+    leg.jointPositions = [0.707, -1.5]
+
+    J = Jkin(x)
+    f = fkin(x)
+
+    thigh = getTransforms('thigh_top')
+    calf  = getTransforms('calf_top')
+    p_thigh, p_calf = np.array(thigh[:3]), np.array(calf[:3])
+    q_thigh = thigh[3:]
+
+    # pseudo leg radius (m)
+    r_leg = 0.04
+
+    palm = np.array(f[:3])
+
+    # signed distance and closest point
+    d, proj = pseudo_sdf(palm, p_thigh, p_calf, r_leg)
+    n = (palm - proj) / (np.linalg.norm(palm - proj) + 1e-9)
+
+    # desired indentation (almost 5 mm)
+    d_des = -0.005
+    p_des = proj + (r_leg + d_des) * n
+    q_des = q_thigh  # keep same orientation
+
+    phase += dt
+    s = 0.5 * (1 - np.cos(2 * np.pi * phase / 8.0))
+    p_des += 0.1 * s * (p_calf - p_thigh)  # 10 cm stroke amplitude
+
+    mu = np.zeros(14)
+    mu[:7] = np.hstack([p_des, q_des])
+    mu[7:] = f[7:]
+
+    eR = logmap(mu[:7], f[:7])
+    JR = J[:6, :]
+    lam = 0.1
+    dq = JR.T @ np.linalg.inv(JR @ JR.T + lam**2 * np.eye(6)) @ eR
+
+    qdot = 0.8 * dq / max(dt, 1e-6)
+    qdot = np.clip(qdot, -2.0, 2.0)
+    return qdot

@@ -1,0 +1,50 @@
+# RCFS Challenge 03: Stable DLS Circular Motion (Right Arm Only)
+
+
+import numpy as np
+
+theta = 0.0  #
+def reset():
+    global theta
+    leg.jointPositions = [0.707, -1.5]   # keep mannequin fixed
+    theta = 0.0
+    return [0.] * 17
+
+
+def control(x, dt):
+    global theta
+
+    leg.jointPositions = [0.707, -1.5]
+
+    J = Jkin(x)
+    f = fkin(x)
+
+    thigh_top = getTransforms('thigh_top')
+    p_c = np.array(thigh_top[:3])     # position
+    q_c = thigh_top[3:]               # orientation (kept constant)
+
+    r = 0.025       # 2.5 cm radius
+    w = 0.5         # angular speed (rad/s)
+    theta += w * dt
+
+    offset = np.array([r*np.cos(theta), r*np.sin(theta), 0.0])
+    p_des = p_c + offset
+
+    mu = np.ndarray((14,))
+    mu[:7] = np.hstack([p_des, q_c])  # right hand target
+    mu[7:] = f[7:]                    # left hand frozen
+
+    eR = logmap(mu[:7], f[:7])        # position + orientation error
+
+    JR = J[:6, :]
+
+    # --- Damped Least-Squares inverse ---
+    lam = 0.15                       
+    JJt = JR @ JR.T
+    J_dls = JR.T @ np.linalg.inv(JJt + lam**2 * np.eye(6))
+
+    dq = J_dls @ eR                   # joint-space increment
+    qdot = dq / max(dt, 1e-6)
+    qdot = np.clip(qdot, -1.5, 1.5)   # limit velocity for smooth motion
+
+    return qdot

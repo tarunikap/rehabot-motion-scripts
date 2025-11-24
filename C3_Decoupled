@@ -1,0 +1,101 @@
+#decoupled position and orientation tracking- not done here!?
+import numpy as np
+
+stroke_time = 6.0        # seconds to go from thigh_top -> calf_top
+amp_lateral = 0.015      # lateral stroke amplitude (m) along tangent (15 mm). set 0 for no lateral motion
+freq_lateral = 1.0       # Hz for lateral stroke
+penetration = 0.004      # meters to bias into surface (4 mm)
+palm_offset = np.array([0.0, 0.0, -0.06])  # hand frame offset (wrist->palm) in hand frame (example -6cm along local z)
+Kpos = 300.0             # position stiffness (start smaller if too strong: 50-300)
+Dpos = 40.0              # position damping
+max_joint_vel = 5.0      # safety cap
+
+K_mat = np.eye(3) * Kpos
+D_mat = np.eye(3) * Dpos
+
+t = 0.0
+prev_fpos = None
+
+def reset():
+    global t, prev_fpos
+    t = 0.0
+    prev_fpos = None
+    leg.jointPositions = [0.707, -1.5]
+    return np.zeros(17)
+
+def build_local_frame(pA, pB, pC):
+    v1 = pB - pA
+    v2 = pC - pA
+    n = np.cross(v1, v2)
+    norm_n = np.linalg.norm(n) + 1e-9
+    n = n / norm_n
+    t1 = v1 / (np.linalg.norm(v1) + 1e-9)
+    t2 = np.cross(n, t1)
+    t2 = t2 / (np.linalg.norm(t2) + 1e-9)
+    return n, t1, t2
+
+def control(x, dt):
+    global t, prev_fpos
+    t += dt
+
+    thigh_top = np.array(getTransforms('thigh_top'))   # [px,py,pz,qx,qy,qz,qw]
+    thigh_bottom = np.array(getTransforms('thigh_bottom'))
+    calf_top = np.array(getTransforms('calf_top'))
+    calf_bottom = np.array(getTransforms('calf_bottom'))
+
+    pA = thigh_top[:3]; pB = thigh_bottom[:3]; pC = calf_top[:3]
+    n, t1, t2 = build_local_frame(pA, pB, pC)  # n = outward normal, t1/t2 tangent basis
+
+    alpha = min(t / stroke_time, 1.0)
+    path_pos = (1.0 - alpha) * thigh_top[:3] + alpha * calf_top[:3]
+
+    lateral = amp_lateral * np.sin(2.0 * np.pi * freq_lateral * t)
+    desired_pos = path_pos + lateral * t2 - penetration * n
+
+    f = fkin(x)   # returns transform for right and left hands; right first 7 values
+    hand_pos = f[:3]
+    hand_quat = f[3:7]
+
+    q = hand_quat
+    # quaternion q = [qx, qy, qz, qw]
+    qx, qy, qz, qw = q
+    R = np.array([
+        [1-2*(qy**2+qz**2),   2*(qx*qy - qz*qw),   2*(qx*qz + qy*qw)],
+        [2*(qx*qy + qz*qw),   1-2*(qx**2+qz**2),   2*(qy*qz - qx*qw)],
+        [2*(qx*qz - qy*qw),   2*(qy*qz + qx*qw),   1-2*(qx**2+qy**2)]
+    ])
+    world_palm_offset = R @ palm_offset
+    # Adjust desired_pos so that control point corresponds to palm center
+    desired_control_point = desired_pos - world_palm_offset
+
+    x_meas = hand_pos.copy()  
+   
+    if prev_fpos is None:
+        xdot = np.zeros(3)
+        prev_fpos = f.copy()
+    else:
+        xdot = (f[:3] - prev_fpos[:3]) / dt
+        prev_fpos = f.copy()
+
+    e_pos = desired_control_point - x_meas
+
+    F_pos = K_mat @ e_pos - D_mat @ xdot
+
+  
+    J = Jkin(x) 
+    J_pos = J[:3, :]  
+
+    try:
+        Jp = np.linalg.pinv(J_pos)
+    except Exception:
+        Jp = np.linalg.pinv(J_pos + 1e-6*np.eye(J_pos.shape[0]))
+
+    u = Jp @ F_pos  
+
+    # Safety clamp
+    norm_u = np.linalg.norm(u)
+    if norm_u > max_joint_vel:
+        u = (u / norm_u) * max_joint_vel
+
+
+    return u
